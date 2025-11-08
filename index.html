@@ -1,19 +1,25 @@
 <!doctype html>
 <html lang="pl">
 <head>
-<meta http-equiv="Content-Type" content="text/html;charset=UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Char Explorer</title>
 <style>
 :root{--ui-h:56px;--cell-size:44px;--gap:8px}
 html,body{height:100%;margin:0}
-body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;overflow:hidden;background:#0f1115;color:#e6eef8}
-#ui{position:fixed;left:0;right:0;top:0;height:var(--ui-h);display:flex;align-items:center;gap:8px;padding:8px;background:linear-gradient(180deg,rgba(10,12,16,.9),rgba(10,12,16,.6));backdrop-filter:blur(6px);z-index:20}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;background:#0f1115;color:#e6eef8;display:flex;flex-direction:column;overflow:hidden}
+#ui{height:var(--ui-h);display:flex;align-items:center;gap:8px;padding:8px;background:linear-gradient(180deg,rgba(10,12,16,.9),rgba(10,12,16,.6));backdrop-filter:blur(6px);z-index:10;position:relative}
 #ui input[type=number]{width:120px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.02);color:inherit}
 #ui button{padding:8px 12px;border-radius:8px;border:0;background:#1b2430;color:#e6eef8}
 #pageInfo{margin-left:8px;color:#9fb0d3}
-#canvas{position:fixed;left:0;right:0;top:var(--ui-h);bottom:0;display:block}
-.footer{position:fixed;left:0;right:0;bottom:0;height:36px;display:flex;align-items:center;justify-content:center;color:#9fb0d3;z-index:20}
+#scroll{flex:1;overflow-y:auto;scroll-behavior:smooth;padding:12px}
+.page{margin-bottom:24px;background:rgba(255,255,255,0.03);padding:12px;border-radius:8px}
+.title{color:#9fb0d3;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(10,var(--cell-size));gap:var(--gap)}
+.cell{width:var(--cell-size);height:var(--cell-size);display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer}
+.char{font-size:22px}
+.code{font-size:11px;color:#9fb0d3}
+.footer{height:36px;display:flex;align-items:center;justify-content:center;color:#9fb0d3}
 @media(max-width:640px){:root{--cell-size:36px;--gap:6px;--ui-h:64px}#ui{padding:6px}}
 </style>
 </head>
@@ -24,188 +30,72 @@ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,"Helvetica Neue",Arial;
 <label>Go to page <input id="goto" type="number" min="0" value="0"></label>
 <div id="pageInfo">Page 0 / 0</div>
 </div>
-<canvas id="canvas"></canvas>
-<div class="footer">Kliknij znak aby skopiować | Scroll lub przeciągnij | Każda strona ma 60 znaków</div>
+<div id="scroll"></div>
+<div class="footer">click char</div>
 <script>
-const canvas = document.getElementById('canvas')
-const ctx = canvas.getContext('2d')
-let dpr = Math.max(1, window.devicePixelRatio || 1)
-
-function resize() {
- dpr = Math.max(1, window.devicePixelRatio || 1)
- canvas.width = innerWidth * dpr
- canvas.height = (innerHeight - parseInt(getComputedStyle(document.documentElement).getPropertyValue('--ui-h'))) * dpr
- canvas.style.width = innerWidth + 'px'
- canvas.style.height = (innerHeight - parseInt(getComputedStyle(document.documentElement).getPropertyValue('--ui-h'))) + 'px'
- ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
- draw()
+const PER=60,MAX=0x110000,TOT=Math.ceil(MAX/PER)
+const scroll=document.getElementById('scroll'),pageInfo=document.getElementById('pageInfo')
+function makePage(p){
+const page=document.createElement('div')
+page.className='page'
+page.dataset.p=p
+const t=document.createElement('div')
+t.className='title'
+t.textContent='Page '+p+' — U+'+(p*PER).toString(16).toUpperCase().padStart(4,'0')
+page.appendChild(t)
+const g=document.createElement('div')
+g.className='grid'
+for(let i=0;i<PER;i++){
+const cp=p*PER+i
+if(cp>=MAX)break
+const c=document.createElement('div')
+c.className='cell'
+const ch=String.fromCodePoint(cp)
+c.innerHTML='<div class="char">'+ch+'</div><div class="code">U+'+cp.toString(16).toUpperCase().padStart(4,'0')+'</div>'
+c.onclick=()=>navigator.clipboard.writeText(ch).then(flash)
+g.appendChild(c)
 }
-
-addEventListener('resize', resize)
-
-const CODEPOINT_MAX = 0x110000
-const PER_PAGE = 60
-const totalPages = Math.ceil(CODEPOINT_MAX / PER_PAGE)
-const cellSize = () => parseInt(getComputedStyle(document.documentElement).getPropertyValue('--cell-size'))
-const gap = () => parseInt(getComputedStyle(document.documentElement).getPropertyValue('--gap'))
-const cols = 10
-const rows = 6
-const pageHeight = () => rows * cellSize() + (rows - 1) * gap() + 24
-let scrollY = 0
-let targetY = 0
-let maxScroll = (totalPages * pageHeight()) - (canvas.height / dpr)
-if (maxScroll < 0) maxScroll = 0
-const easing = 0.02
-const uiHeight = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--ui-h'))
-
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)) }
-
-function draw() {
- ctx.clearRect(0, 0, canvas.width, canvas.height)
- ctx.font = '14px system-ui,Segoe UI,Roboto'
- ctx.textBaseline = 'top'
- ctx.fillStyle = '#e6eef8'
- ctx.textAlign = 'left'
- const viewH = canvas.height / dpr
- const startPage = Math.floor(scrollY / pageHeight())
- const visiblePages = Math.ceil(viewH / pageHeight()) + 1
- for (let p = startPage; p < startPage + visiblePages && p < totalPages; p++) {
-  const py = (p * pageHeight()) - scrollY + 12
-  drawPage(p, py)
- }
- updatePageInfo()
+page.appendChild(g)
+return page
 }
-
-function drawPage(page, py) {
- const xpad = 12
- ctx.fillStyle = 'rgba(255,255,255,0.03)'
- ctx.fillRect(xpad, py - 6, canvas.width / dpr - 24, pageHeight() - 12)
- ctx.fillStyle = '#9fb0d3'
- ctx.font = '13px system-ui,Segoe UI,Roboto'
- ctx.fillText('Page ' + page + ' — U+' + (page * PER_PAGE).toString(16).toUpperCase().padStart(4, '0'), xpad + 6, py - 2)
- ctx.font = '20px system-ui,Segoe UI,Roboto'
- ctx.fillStyle = '#e6eef8'
- for (let i = 0; i < PER_PAGE; i++) {
-  const cp = page * PER_PAGE + i
-  if (cp >= CODEPOINT_MAX) break
-  const col = i % cols
-  const row = Math.floor(i / cols)
-  const cx = xpad + col * (cellSize() + gap())
-  const cy = py + row * (cellSize() + gap())
-  const ch = String.fromCodePoint(cp)
-  ctx.fillText(ch, cx + 8, cy + 6)
-  ctx.font = '11px system-ui,Segoe UI,Roboto'
-  ctx.fillStyle = '#9fb0d3'
-  const codeHex = cp.toString(16).toUpperCase().padStart(4, '0')
-  ctx.fillText('U+' + codeHex, cx + 8, cy + 28)
-  ctx.font = '20px system-ui,Segoe UI,Roboto'
-  ctx.fillStyle = '#e6eef8'
- }
+function flash(){
+const t=document.title
+document.title='copied'
+setTimeout(()=>document.title=t,700)
 }
-
-function animate() {
- scrollY += (targetY - scrollY) * easing
- scrollY = clamp(scrollY, 0, maxScroll)
- draw()
- requestAnimationFrame(animate)
+let loaded=0
+function loadNext(){
+if(loaded>=TOT)return
+scroll.appendChild(makePage(loaded))
+loaded++
+pageInfo.textContent='Page 0 / '+(TOT-1)
 }
-
-animate()
-
-function updatePageInfo() {
- const page = Math.floor(scrollY / pageHeight())
- document.getElementById('pageInfo').textContent = 'Page ' + page + ' / ' + (totalPages - 1)
- document.getElementById('goto').value = page
+loadNext()
+scroll.addEventListener('scroll',()=>{
+const b=scroll.scrollTop+scroll.clientHeight
+const last=scroll.lastElementChild
+if(last&&b>last.offsetTop-800)loadNext()
+updateInfo()
+})
+function updateInfo(){
+const pages=[...scroll.children]
+let closest=0,dist=1e9
+pages.forEach(p=>{
+const d=Math.abs(scroll.scrollTop-p.offsetTop)
+if(d<dist){dist=d;closest=p.dataset.p}
+})
+pageInfo.textContent='Page '+closest+' / '+(TOT-1)
+document.getElementById('goto').value=closest
 }
-
-let isDragging = false
-let lastY = 0
-let velocity = 0
-canvas.addEventListener('wheel', e => {
- e.preventDefault()
- targetY = clamp(targetY + e.deltaY * 1.6, 0, maxScroll)
-}, { passive: false })
-
- 
- 
-let lastMoveTime = 0
-
-canvas.addEventListener('pointerdown', e => {
- isDragging = true
- lastY = e.clientY
- velocity = 0
- lastMoveTime = performance.now()
- canvas.setPointerCapture(e.pointerId)
-})
-
-canvas.addEventListener('pointermove', e => {
- if (!isDragging) return
- const now = performance.now()
- const dy = e.clientY - lastY
- const dt = now - lastMoveTime || 16
- lastY = e.clientY
- lastMoveTime = now
- const speed = dy / dt * 16
- velocity = speed * 25.2
- targetY = clamp(targetY - velocity, 0, maxScroll)
-})
-
-canvas.addEventListener('pointerup', e => {
- isDragging = false
- canvas.releasePointerCapture(e.pointerId)
- 
- function inertia() {
-  if (Math.abs(velocity) < 0.2) return
-  targetY = clamp(targetY - velocity, 0, maxScroll)
-  velocity *= 0.94
-  requestAnimationFrame(inertia)
- }
- inertia()
-})
-document.getElementById('prev').addEventListener('click', () => {
- const p = clamp(Math.floor(targetY / pageHeight()) - 1, 0, totalPages - 1)
- goToPage(p)
-})
-
-document.getElementById('next').addEventListener('click', () => {
- const p = clamp(Math.floor(targetY / pageHeight()) + 1, 0, totalPages - 1)
- goToPage(p)
-})
-
-function goToPage(p) {
- targetY = clamp(p * pageHeight(), 0, maxScroll)
+function go(p){
+p=Math.max(0,Math.min(TOT-1,p))
+while(loaded<=p)loadNext()
+const target=[...scroll.children].find(e=>+e.dataset.p===p)
+if(target)scroll.scrollTo({top:target.offsetTop})
 }
-
-document.getElementById('goto').addEventListener('change', e => {
- const v = Number(e.target.value)
- if (Number.isFinite(v)) goToPage(clamp(v, 0, totalPages - 1))
-})
-
-canvas.addEventListener('click', e => {
- const rect = canvas.getBoundingClientRect()
- const x = e.clientX - rect.left
- const y = e.clientY - rect.top
- const viewY = scrollY + y
- const pageIndex = Math.floor(viewY / pageHeight())
- const withinPageY = viewY - (pageIndex * pageHeight()) - 12
- const col = Math.floor((x - 12) / (cellSize() + gap()))
- const row = Math.floor(withinPageY / (cellSize() + gap()))
- if (col < 0 || col >= cols || row < 0 || row >= rows) return
- const idx = row * cols + col
- if (idx < 0 || idx >= PER_PAGE) return
- const cp = pageIndex * PER_PAGE + idx
- if (cp >= CODEPOINT_MAX) return
- const ch = String.fromCodePoint(cp)
- navigator.clipboard.writeText(ch).then(() => { flashCopied() })
-})
-
-function flashCopied() {
- const old = document.title
- document.title = 'copied'
- setTimeout(() => document.title = old, 700)
-}
-
-resize()
+document.getElementById('prev').onclick=()=>go(Number(document.getElementById('goto').value)-1)
+document.getElementById('next').onclick=()=>go(Number(document.getElementById('goto').value)+1)
+document.getElementById('goto').onchange=e=>go(Number(e.target.value))
 </script>
 </body>
 </html>
